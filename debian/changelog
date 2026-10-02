@@ -1,3 +1,12 @@
+pve-qemu-kvm (11.0.3-4+devuan1) trixie; urgency=medium
+
+  * fall back to syslog for a daemonized QEMU's stderr when there's no
+    journald, e.g. on Devuan with sysvinit or OpenRC, instead of keeping the
+    caller's stderr open, which made callers waiting for it hang, like
+    pvestatd's CPU flag query and VM starts
+
+ -- Petr Sakař <petr.sakar@chare.eu>  Fri, 02 Oct 2026 21:23:34 +0200
+
 pve-qemu-kvm (11.0.3-4) trixie; urgency=medium
 
   * vma: reject archive member names that are not a single path component

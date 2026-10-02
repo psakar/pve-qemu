@@ -80,3 +80,4 @@ pve/0047-pbs-restore-add-no-cache-flag-to-skip-host-page-cach.patch
 pve/0048-PVE-backup-vma-reader-reject-zero-length-name-blobs.patch
 pve/0049-PVE-backup-vma-reader-fix-blob-buffer-bounds-check-w.patch
 pve/0050-PVE-backup-vma-reader-restrict-allowed-archive-membe.patch
+pve/0051-PVE-fall-back-to-syslog-for-stderr-when-daemonized-w.patch
