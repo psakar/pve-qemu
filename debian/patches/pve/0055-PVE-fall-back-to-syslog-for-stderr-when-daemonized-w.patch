@@ -1,0 +1,131 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Petr=20Saka=C5=99?= <petr.sakar@chare.eu>
+Date: Fri, 2 Oct 2026 21:23:24 +0200
+Subject: [PATCH] PVE: fall back to syslog for stderr when daemonized without
+ journald
+
+The PVE patch redirecting a daemonized QEMU's stderr to the journal
+uses sd_journal_stream_fd() without checking its result. Without
+journald, e.g. on systemd-free derivatives like Devuan with sysvinit or
+OpenRC, that fails, and so does the dup2(), so stderr stays the one
+QEMU was started with. Callers waiting for EOF on it then never get it,
+like PVE's run_command, which hangs as long as the VM runs: pvestatd's
+CPU flag query (VM -1) never returns, and neither do VM starts.
+
+If there's no journal, send stderr to syslog instead, with the same
+identifier and priority, through a pipe whose lines a detached thread
+passes on to syslog(3), so that error messages end up in the system log
+as with the journal. If that fails too, use /dev/null like upstream
+QEMU, but never keep the caller's stderr. Also close the journal or
+pipe fd after duplicating it onto stderr.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ os-posix.c | 80 ++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 78 insertions(+), 2 deletions(-)
+
+diff --git a/os-posix.c b/os-posix.c
+index 84b96d3..9bc9cdb 100644
+--- a/os-posix.c
++++ b/os-posix.c
+@@ -36,6 +36,7 @@
+ #include "qemu/log.h"
+ #include "system/runstate.h"
+ #include "qemu/cutils.h"
++#include "qemu/thread.h"
+ 
+ #ifdef CONFIG_LINUX
+ #include <sys/prctl.h>
+@@ -284,6 +285,72 @@ void os_setup_limits(void)
+     }
+ }
+ 
++/*
++ * Pass on the lines written to the pipe's read end @opaque to syslog, until
++ * all its write ends are closed.
++ */
++static void *stderr_syslog_thread(void *opaque)
++{
++    int fd = GPOINTER_TO_INT(opaque);
++    char buf[1024];
++    size_t len = 0;
++
++    for (;;) {
++        ssize_t n;
++        char *start, *nl;
++
++        n = RETRY_ON_EINTR(read(fd, buf + len, sizeof(buf) - 1 - len));
++        if (n <= 0) {
++            break;
++        }
++        len += n;
++
++        start = buf;
++        while ((nl = memchr(start, '\n', buf + len - start))) {
++            *nl = '\0';
++            if (nl > start) {
++                syslog(LOG_ERR, "%s", start);
++            }
++            start = nl + 1;
++        }
++        len -= start - buf;
++        memmove(buf, start, len);
++
++        /* pass on overlong lines in pieces */
++        if (len == sizeof(buf) - 1) {
++            buf[len] = '\0';
++            syslog(LOG_ERR, "%s", buf);
++            len = 0;
++        }
++    }
++
++    if (len > 0) {
++        buf[len] = '\0';
++        syslog(LOG_ERR, "%s", buf);
++    }
++    close(fd);
++    return NULL;
++}
++
++/*
++ * Like sd_journal_stream_fd(), but for syslog: return a file descriptor whose
++ * lines are logged with @identifier and priority LOG_ERR, or -1 on error.
++ */
++static int syslog_stream_fd(const char *identifier)
++{
++    QemuThread thread;
++    int fds[2];
++
++    if (!g_unix_open_pipe(fds, FD_CLOEXEC, NULL)) {
++        return -1;
++    }
++
++    openlog(identifier, LOG_PID | LOG_NDELAY, LOG_DAEMON);
++    qemu_thread_create(&thread, "stderr-syslog", stderr_syslog_thread,
++                       GINT_TO_POINTER(fds[0]), QEMU_THREAD_DETACHED);
++    return fds[1];
++}
++
+ void os_setup_post(void)
+ {
+     int fd = 0;
+@@ -310,8 +377,17 @@ void os_setup_post(void)
+         dup2(fd, 1);
+         /* In case -D is given do not redirect stderr to journal */
+         if (!qemu_log_enabled()) {
+-            int journal_fd = sd_journal_stream_fd("QEMU", LOG_ERR, 0);
+-            dup2(journal_fd, 2);
++            int log_fd = sd_journal_stream_fd("QEMU", LOG_ERR, 0);
++
++            /* no journald, e.g. with sysvinit or OpenRC: use syslog */
++            if (log_fd < 0) {
++                log_fd = syslog_stream_fd("QEMU");
++            }
++            /* neither: discard it, but don't keep the caller's stderr */
++            dup2(log_fd >= 0 ? log_fd : fd, 2);
++            if (log_fd >= 0) {
++                close(log_fd);
++            }
+         }
+ 
+         close(fd);
