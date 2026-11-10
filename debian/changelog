@@ -1,3 +1,12 @@
+pve-qemu-kvm (11.1.3-1+devuan1) trixie; urgency=medium
+
+  * fall back to syslog for a daemonized QEMU's stderr when there's no
+    journald, e.g. on Devuan with sysvinit or OpenRC, instead of keeping the
+    caller's stderr open, which made callers waiting for it hang, like
+    pvestatd's CPU flag query and VM starts
+
+ -- Petr Sakař <petr.sakar@chare.eu>  Tue, 10 Nov 2026 20:55:01 +0100
+
 pve-qemu-kvm (11.1.3-1) trixie; urgency=medium
 
   * update to QEMU 11.1.3, including fixes for KVM, CPU and device emulation,
